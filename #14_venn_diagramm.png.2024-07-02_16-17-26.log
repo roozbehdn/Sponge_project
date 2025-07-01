@@ -1,0 +1,12 @@
+INFO [2024-07-02 16:17:26] $x
+INFO [2024-07-02 16:17:26] list(listInput_upsetplot$SPLASH_TSP2, listInput_upsetplot$SPLASH_TSP1)
+INFO [2024-07-02 16:17:26] 
+INFO [2024-07-02 16:17:26] $category.names
+INFO [2024-07-02 16:17:26] c("TSP2", "TSP1")
+INFO [2024-07-02 16:17:26] 
+INFO [2024-07-02 16:17:26] $filename
+INFO [2024-07-02 16:17:26] [1] "#14_venn_diagramm.png"
+INFO [2024-07-02 16:17:26] 
+INFO [2024-07-02 16:17:26] $output
+INFO [2024-07-02 16:17:26] [1] TRUE
+INFO [2024-07-02 16:17:26] 

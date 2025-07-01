@@ -1,0 +1,89 @@
+---
+title: "Plot granny anchor across sponge samples"
+output: html_notebook
+---
+
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(pheatmap)
+library(viridis)
+
+metadata_dev = fread("/oak/stanford/groups/horence/Roozbeh/Sponge_project/runs/Time_Course_runs/Sponge_RNA_developmental_timecourse_RQ23078/metadata_modified.tsv")
+counts_dev = fread("/oak/stanford/groups/horence/Roozbeh/Sponge_project/runs/Time_Course_runs/Sponge_RNA_developmental_timecourse_RQ23078_RC/bagranny_counts/bagranny_counts.txt",header=F)
+setnames(counts_dev,c("V1","V2","V3","V4"),c("sample_id","anchor","target","count"))
+sample_name_id_conversion_dev = fread("/oak/stanford/groups/horence/Roozbeh/Sponge_project/runs/Time_Course_runs/Sponge_RNA_developmental_timecourse_RQ23078_RC/sample_name_to_id.mapping.txt",header = FALSE)
+names(sample_name_id_conversion_dev) = c("sample_name","sample_id")
+counts_dev = merge(counts_dev,sample_name_id_conversion_dev,all.x=T,all.y=F,by.x="sample_id",by.y="sample_id")
+counts_dev = merge(counts_dev,metadata_dev,all.x=T,all.y=F,by.x="sample_name",by.y="sample_name")
+
+metadata_immune = fread("/oak/stanford/groups/horence/Roozbeh/Sponge_project/runs/Time_Course_runs/Sponge_RNA_immune_response_RQ23179/metadata_modified.tsv")
+counts_immune = fread("/oak/stanford/groups/horence/Roozbeh/Sponge_project/runs/Time_Course_runs/Sponge_RNA_immune_response_RQ23179_RC/bagranny_counts/bagranny_counts.txt",header=F)
+setnames(counts_immune,c("V1","V2","V3","V4"),c("sample_id","anchor","target","count"))
+sample_name_id_conversion_immune = fread("/oak/stanford/groups/horence/Roozbeh/Sponge_project/runs/Time_Course_runs/Sponge_RNA_immune_response_RQ23179_RC/sample_name_to_id.mapping.txt",header = FALSE)
+names(sample_name_id_conversion_immune) = c("sample_name","sample_id")
+counts_immune = merge(counts_immune,sample_name_id_conversion_immune,all.x=T,all.y=F,by.x="sample_id",by.y="sample_id")
+counts_immune = merge(counts_immune,metadata_immune,all.x=T,all.y=F,by.x="sample_name",by.y="sample_name")
+#######################################################################################################################
+
+counts = rbind(counts_dev,counts_immune,fill=T)
+metadata = rbind(metadata_dev,metadata_immune,fill=T)
+metadata[is.na(Treatment),Treatment:="Normal"]
+metadata$Day = factor(metadata$Day,levels = c("D5","D8","D12"))
+setorder(metadata,Day,Treatment)
+
+counts[,sample_id:=NULL]
+counts$Day = factor(counts$Day,levels = c("D5","D8","D12"))
+counts[,anchor_count_per_sample:=sum(count),by=paste(sample_name,anchor)]
+counts[,target_count:=sum(count),by=target] # total number of reads per target
+counts[,target_frac:=target_count/sum(counts$count)] # fraction of anchor read for each target
+counts[,target_fraction_per_sample:=count/anchor_count_per_sample,by=paste(target,sample_name)]
+counts[,target:=paste(target,round(target_frac,digits =4),sep="_"),by=target]
+counts$target = factor(counts$target,levels =  counts[order(-target_frac),list(target,target_frac)][!duplicated(target)]$target) # sort targets based on their counts
+
+
+### the data table for generating the dot plot ###################
+counts_dotplot = counts[target_fraction_per_sample>0.03]
+ggplot(counts_dotplot,aes(factor(Day),target_fraction_per_sample,colour=factor(target)))+geom_point(size=3) + theme_bw() +  theme(text = element_text(size=20))
+##################################################################
+
+
+counts_reshape = reshape(counts[,list(sample_name,target,count)], timevar="sample_name", idvar="target", direction="wide")
+counts_reshape = counts_reshape[order(target)] # sort the rows of the reshaped datatable based on the marginal target counts
+counts_reshape[is.na(counts_reshape)]=0
+counts_reshape_df = data.frame(counts_reshape)
+rownames(counts_reshape_df) = counts_reshape_df$target
+counts_reshape_df = counts_reshape_df[,-1]
+column_names = colnames(counts_reshape_df)
+column_names = gsub("count.","",column_names)
+colnames(counts_reshape_df) = column_names
+
+
+### below I make a data table sorting_dt for sorting the cells first based on celltype and then target fraction1, target fraction2, ... 
+
+counts_reshape_df = counts_reshape_df[,metadata$sample_name]
+
+
+setkey(counts,sample_name)
+my_annotation_col = data.table(colnames(counts_reshape_df))
+my_annotation_col = merge(my_annotation_col, metadata,all.x=T,all.y=F,by.x="V1",by.y="sample_name")
+my_annotation_col$V1 = factor(my_annotation_col$V1,levels=colnames(counts_reshape_df))
+setorder(my_annotation_col,V1)
+
+test = my_annotation_col$V1
+my_annotation_col[,V1:=NULL]
+my_annotation_col = data.frame(my_annotation_col)
+rownames(my_annotation_col) = test
+
+
+g1=pheatmap(counts_reshape_df,cluster_rows = FALSE,cluster_cols = F, main = "bagranny_anchor_across_RNA_developmental_samples", show_colnames = FALSE,fontsize = 6, color = viridis(n = 256, alpha = 1, begin = 0, end = 1, option = "viridis"),annotation_col = my_annotation_col,show_rownames = F)
+
+g2=pheatmap(t(t(counts_reshape_df)/colSums(counts_reshape_df))[1:20,],cluster_rows = FALSE,cluster_cols = F, main = "bagranny_anchor_across_RNA_developmental_samples", show_colnames = FALSE,fontsize = 6, color = viridis(n = 256, alpha = 1, begin = 0, end = 1, option = "viridis"),annotation_col = my_annotation_col,show_rownames = F)
+
+counts_reshape_df[counts_reshape_df==0]=NA
+g3=pheatmap(log10(counts_reshape_df),cluster_rows = FALSE,cluster_cols = F, main = "bagranny_anchor_across_RNA_developmental_samples", show_colnames = FALSE,fontsize = 6, color = viridis(n = 256, alpha = 1, begin = 0, end = 1, option = "viridis"),annotation_col = my_annotation_col,show_rownames = F,na_col = "white",legend_breaks = c(0,log10(10),log10(100),log10(1000) ), legend_labels = c(1,10,100,1000))
+
+g4=pheatmap(log10(counts_reshape_df)[1:20,],cluster_rows = FALSE,cluster_cols = F, main = "bagranny_anchor_across_RNA_developmental_samples", show_colnames = FALSE,fontsize = 6, color = viridis(n = 256, alpha = 1, begin = 0, end = 1, option = "viridis"),annotation_col = my_annotation_col,show_rownames = F,na_col = "white",legend_breaks = c(0,log10(10),log10(100),log10(1000) ), legend_labels = c(1,10,100,1000))
+
+```

@@ -1,0 +1,305 @@
+---
+title: "Plot granny anchor across sponge samples"
+output: html_notebook
+---
+
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(pheatmap)
+library(viridis)
+library(RColorBrewer)
+library(scales)
+
+riffle <- function(a, b) {   # this function interleaves the elements of two vectors into a vector
+  seqmlab <- seq(length=length(a))
+  c(rbind(a[seqmlab], b[seqmlab]), a[-seqmlab], b[-seqmlab])
+}
+
+
+metadata = fread("/oak/stanford/groups/horence/Roozbeh/Sponge_project/runs/10X_runs/Sponge_SRP216435_anchor_count_3/metadata_modified.tsv")
+peter_cdna_targets = fread("/oak/stanford/groups/horence/Roozbeh/Sponge_project/Granny_Data/Jacob_assembly/Peters_cDNAs_11-20_targets.tsv") # this file contains the target sequences found in each assembled cDNA transcript
+granny_anchor_count_in_matched_bulk_RNA = fread("/oak/stanford/groups/horence/Roozbeh/Sponge_project/runs/Bulk_RNA_runs/Sponge_bulk_SRP216435/granny_anchor/granny_anchor_counts.tsv")
+
+## read in counts files and then make one merged data table of counts for the anchor across samples ###################
+S1 = fread("/oak/stanford/groups/horence/Roozbeh/Sponge_project/runs/10X_runs/Sponge_SRP216435_anchor_count_2/S1/high_entropy_counts.tsv")
+S2 = fread("/oak/stanford/groups/horence/Roozbeh/Sponge_project/runs/10X_runs/Sponge_SRP216435_anchor_count_2/S2/high_entropy_counts.tsv")
+S3 = fread("/oak/stanford/groups/horence/Roozbeh/Sponge_project/runs/10X_runs/Sponge_SRP216435_anchor_count_2/S3/high_entropy_counts.tsv")
+S4 = fread("/oak/stanford/groups/horence/Roozbeh/Sponge_project/runs/10X_runs/Sponge_SRP216435_anchor_count_2/S4/high_entropy_counts.tsv")
+
+## granny anchor:  GCCATCAGAACCCCAGGAACCATCTAA
+## second granny-like anchor: TGGAGGTGGTCGTCGATCTGGTGGTGG
+anchor_interest = "GCCATCAGAACCCCAGGAACCATCTAA"
+
+S1 = S1[anchor==anchor_interest]
+S2 = S2[anchor==anchor_interest]
+S3 = S3[anchor==anchor_interest]
+S4 = S4[anchor==anchor_interest]
+
+S1[,sample:="S1"]
+S2[,sample:="S2"]
+S3[,sample:="S3"]
+
+counts = rbind(S1,S2,S3) # the counts table for all 3 sponge samples
+#######################################################################################################################
+
+counts[,cell_barcode:=paste(strsplit(sample_id,split="_")[[1]][1],sample,sep="_"),by=1:nrow(counts)]
+counts[,anchor_count_per_cell:=sum(count),by=paste(cell_barcode,anchor)]
+peter_cdna_targets = merge(peter_cdna_targets,counts[!duplicated(target),list(target,target_count)],all.x=T,all.y=F,by.x = "Target",by.y="target")
+names(granny_anchor_count_in_matched_bulk_RNA) = c("sample_id","anchor","target","count")
+granny_anchor_count_in_matched_bulk_RNA[,target_count:=sum(count),by=target] # total number of reads per target
+peter_cdna_targets = merge(peter_cdna_targets,granny_anchor_count_in_matched_bulk_RNA[!duplicated(target),list(target,target_count)],all.x=T,all.y=F,by.x = "Target",by.y="target")
+setnames(peter_cdna_targets,c("target_count.x","target_count.y"),c("target_count_10x","target_count_bulk"))
+
+##############################################################################
+## to get the total list of targets for granny anchor across all celltypes ###
+counts[,target_count:=sum(count),by=target] # total number of reads per target
+counts[,target_frac:=target_count/sum(counts$count)] # fraction of anchor read for each target
+setorder(counts,-target_frac)
+counts_uniq_target = counts[!duplicated(target)]
+targets_with_more_than_1read = counts_uniq_target[target_count>1]$target
+all_targets = counts_uniq_target$target
+
+targets_with_more_than_1read_fasta = riffle(paste(">",1:length(targets_with_more_than_1read),sep=""),targets_with_more_than_2reads)
+targets_with_more_than_1read_fasta = data.table(targets_with_more_than_1read_fasta)
+write.table(targets_with_more_than_1read_fasta,"/oak/stanford/groups/horence/Roozbeh/Sponge_project/processed_files/granny_targets_with_morethan_one_read.fa",sep="\t",row.names=F,quote=F)
+
+counts_uniq_target$target = factor(counts_uniq_target$target,levels = counts_uniq_target$target)
+ggplot(counts_uniq_target[target_count>1], aes(x=target, y=target_count,fill="darksalmon")) + geom_bar(stat = "identity") + theme_bw() + scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),labels = trans_format("log10", math_format(10^.x))) +annotation_logticks()
+
+##############################################################################
+
+
+##############################################################################################
+########## BELOW I MAKE THE SEQUENCES LOGO FOR THE TARGETS OF GRANNY ANCHOR ##################
+library(ggseqlogo)
+
+create_weighted_pfm <- function(sequences, weights) {. ## this functions generates the weights for each target based on its total count
+  # Get the length of the sequences
+  seq_length <- nchar(sequences[1])
+  
+  # Define the alphabet (A, T, C, G for DNA)
+  alphabet <- c("A", "T", "C", "G")
+  
+  # Initialize an empty PFM
+  pfm <- matrix(0, nrow = length(alphabet), ncol = seq_length, 
+                dimnames = list(alphabet, 1:seq_length))
+  
+  # Fill in the PFM with weighted counts
+  for (i in seq_along(sequences)) {
+    for (pos in seq_len(seq_length)) {
+      base <- substr(sequences[i], pos, pos)
+      pfm[base, pos] <- pfm[base, pos] + weights[i]
+    }
+  }
+  
+  # Normalize columns to get frequencies
+  pfm <- sweep(pfm, 2, colSums(pfm), "/")
+  return(pfm)
+}
+
+targets = counts_uniq_target$target
+target_counts = counts_uniq_target$target_count
+
+# Create weighted PFM
+weighted_pfm <- create_weighted_pfm(targets, target_counts)
+
+# Generate sequence logo
+ggseqlogo(weighted_pfm, method = "custom") +
+  ggtitle("Weighted Sequence Logo")
+
+##############################################################################################
+##############################################################################################
+
+
+
+
+## merge with metadata #######
+metadata[,cell_barcode:=paste(cell,sample_name,sep="_")]
+counts = merge(counts, metadata[,list(cell_barcode,cell_type)], all.x = TRUE, all.y = FALSE, by.x = "cell_barcode", by.y = "cell_barcode")
+#counts = counts[!is.na(cell_type)]
+counts[,target_count:=sum(count),by=target] # total number of reads per target
+counts[,target_frac:=target_count/sum(counts$count)] # fraction of anchor read for each target
+counts[,target_fraction_per_cell:=count/anchor_count_per_cell,by=paste(target,cell_barcode)]
+counts = counts[target_fraction_per_cell>0.1]
+counts[,target:=paste(target,round(target_frac,digits =4),sep="_"),by=target]
+counts$target = factor(counts$target,levels =  counts[order(-target_frac),list(target,target_frac)][!duplicated(target)]$target) # sort targets based on their counts
+##############################
+
+## looking at the number of cells per celltype and number of cells per celltype expressing the anchor #######
+UMI_counts_per_cell = fread("/oak/stanford/groups/horence/Roozbeh/Sponge_project/processed_files/Sponge_cells_UMI_counts.tsv") ## need this to get the UMI count per cell
+counts = merge(counts,UMI_counts_per_cell[,list(cell_barcode,num_UMI_per_cell)],all.x=T,all.y=F,by.x="cell_barcode",by.y="cell_barcode")
+counts[,normalized_granny_expression:=anchor_count_per_cell/num_UMI_per_cell*10000]
+
+## now I get the average normalized granny anchor count per celltype below
+counts_unique_cells = counts[!duplicated(cell_barcode),list(cell_barcode,cell_type,normalized_granny_expression)]
+counts_unique_cells[,average_normalized_granny_expression_per_celltype:=mean(normalized_granny_expression),by=cell_type]
+counts = merge(counts,unique(counts_unique_cells[,list(cell_type,average_normalized_granny_expression_per_celltype)]),all.x=T,all.y=F,by.x="cell_type",by.y="cell_type")
+
+metadata[,num_total_cell_per_celltype:=length(unique(cell_barcode)),by=cell_type]
+counts[,num_expressing_cells:=length(unique(cell_barcode)),by=cell_type]
+metadata1 = unique(metadata[,list(cell_type,num_total_cell_per_celltype)])
+counts1 = unique(counts[,list(cell_type,num_expressing_cells,average_normalized_granny_expression_per_celltype)])
+counts1=merge(counts1,metadata1,all.x=T,all.y=F,by.x="cell_type",by.y="cell_type")
+counts1[,frac_expressing_cells:=num_expressing_cells/num_total_cell_per_celltype]
+counts1 = counts1[!is.na(cell_type)]
+ggplot(counts1, aes(x=frac_expressing_cells, y=num_expressing_cells,color=cell_type)) + geom_point() + theme_bw() +scale_color_brewer(palette = "Paired") + scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),labels = trans_format("log10", math_format(10^.x))) +annotation_logticks() + scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),labels = trans_format("log10", math_format(10^.x))) +annotation_logticks() 
+
+setorder(counts1,-frac_expressing_cells) 
+counts1$cell_type = factor(counts1$cell_type,levels=counts1$cell_type)
+ggplot(counts1, aes(x=cell_type, y=frac_expressing_cells,fill=average_normalized_granny_expression_per_celltype)) +     geom_bar(stat = "identity") + theme_bw() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+
+### now below I want to make the barplot in which the  barcolors reflect the average normalized granny expression per cell
+
+
+
+################################################################################################
+
+counts = counts[cell_type=="Granulocytes"]
+counts[,target_count:=sum(count),by=target] # total number of reads per target
+counts_reshape = reshape(counts[,list(cell_barcode,target,count)], timevar="cell_barcode", idvar="target", direction="wide")
+counts_reshape = counts_reshape[order(target)] # sort the rows of the reshaped datatable based on the marginal target counts
+counts_reshape[is.na(counts_reshape)]=0
+counts_reshape_df = data.frame(counts_reshape)
+rownames(counts_reshape_df) = counts_reshape_df$target
+counts_reshape_df = counts_reshape_df[,-1]
+column_names = colnames(counts_reshape_df)
+column_names = gsub("count.","",column_names)
+colnames(counts_reshape_df) = column_names
+
+
+### below I make a data table sorting_dt for sorting the cells first based on celltype and then target fraction1, target fraction2, ... 
+total_reads_per_cell = colSums(counts_reshape_df)
+sorting_dt = total_reads_per_cell
+for (counter in 1:nrow(counts_reshape_df)){
+  sorting_dt = rbind(sorting_dt, counts_reshape_df[counter,]/total_reads_per_cell)
+}
+sorting_dt = data.table(cbind(transpose(sorting_dt),colnames(sorting_dt)))
+sorting_dt = merge(sorting_dt,metadata[!duplicated(cell_barcode),list(cell_barcode,cell_type)],all.x=T,all.y=F,by.x="colnames(sorting_dt)",by.y="cell_barcode") 
+sort_cols = c("cell_type",names(sorting_dt)[3:(length(names(sorting_dt))-1)],"V1")
+sorting_dt = sorting_dt[order(sorting_dt[, ..sort_cols])]
+counts_reshape_df = counts_reshape_df[,sorting_dt$`colnames(sorting_dt)`]
+
+
+setkey(counts,cell_barcode)
+my_annotation_col = data.table(colnames(counts_reshape_df))
+my_annotation_col = merge(my_annotation_col, metadata[,list(cell_barcode,cell_type,sample_name)],all.x=T,all.y=F,by.x="V1",by.y="cell_barcode")
+total_reads_per_cell_dt = data.table(names(total_reads_per_cell),total_reads_per_cell)
+names(total_reads_per_cell_dt)[2]="anchor_count"
+total_reads_per_cell_dt$anchor_count = factor(total_reads_per_cell_dt$anchor_count,levels = sort(unique(total_reads_per_cell_dt$anchor_count)))
+my_annotation_col = merge(my_annotation_col, total_reads_per_cell_dt, all.x = T, all.y = F, by.x = "V1", by.y = "V1")
+my_annotation_col[,sample_name:=strsplit(V1,split="_")[[1]][2],by=V1]
+my_annotation_col$V1 = factor(my_annotation_col$V1,levels=colnames(counts_reshape_df))
+my_annotation_col[is.na(cell_type),cell_type:= "NA"]
+setorder(my_annotation_col,V1)
+
+test = my_annotation_col$V1
+my_annotation_col[,V1:=NULL]
+my_annotation_col = data.frame(my_annotation_col)
+rownames(my_annotation_col) = test
+
+## below I set the colors for annotation groups #########
+mycolors = brewer.pal(n = length(unique(my_annotation_col$cell_type)), name = "Set3")
+names(mycolors) = unique(my_annotation_col$cell_type)
+mycolors1 = brewer.pal(n = 10, name = "Paired")[1:length(unique(my_annotation_col$sample_name))]
+names(mycolors1) = unique(my_annotation_col$sample_name)
+mycolors2 = brewer.pal(n = 9, name = "Reds")
+mycolors2 = colorRampPalette(mycolors2)(length(unique(unique(my_annotation_col$anchor_count))))
+names(mycolors2) = sort(unique(my_annotation_col$anchor_count))
+mycolors <- list(cell_type=mycolors, sample_name = mycolors1, anchor_count = mycolors2)
+#mycolors <- list( sample_name = mycolors1, anchor_count = mycolors2)
+################################################################
+g1=pheatmap(counts_reshape_df,cluster_rows = FALSE,cluster_cols = F, main = "granny_anchor_across_4_sponge_samples", show_colnames = FALSE,fontsize = 6, color = viridis(n = 256, alpha = 1, begin = 0, end = 1, option = "viridis"),annotation_col = my_annotation_col,show_rownames = F,annotation_colors =mycolors)
+
+counts_reshape_df[counts_reshape_df==0]=NA
+g2=pheatmap(log10(counts_reshape_df),cluster_rows = FALSE,cluster_cols = F, main = "granny_anchor_across_4_sponge_samples", show_colnames = FALSE,fontsize = 6, color = viridis(n = 256, alpha = 1, begin = 0, end = 1, option = "viridis"),annotation_col = my_annotation_col,show_rownames = F,annotation_colors =mycolors,na_col = "white",legend_breaks = c(0,log10(2),log10(4),log10(6),log10(8) ), legend_labels = c(1,2,4,6,8))
+
+g3=pheatmap(log10(counts_reshape_df)[1:20,],cluster_rows = FALSE,cluster_cols = F, main = "granny_anchor_across_4_sponge_samples", show_colnames = FALSE,fontsize = 6, color = viridis(n = 256, alpha = 1, begin = 0, end = 1, option = "viridis"),annotation_col = my_annotation_col,show_rownames = F,annotation_colors =mycolors,na_col = "white",legend_breaks = c(0,log10(2),log10(4),log10(6),log10(8) ), legend_labels = c(1,2,4,6,8))
+
+```
+### now below I want to make the heatmap for anchor "CAACAAAGCCGATGGTTACTATGACAA" in ciona:
+```{r}
+library(data.table)
+library(ggplot2)
+library(pheatmap)
+library(viridis)
+library(RColorBrewer)
+
+
+metadata = fread("/oak/stanford/groups/horence/Roozbeh/NOMAD_10x/utility_files/metadata/non_model_organisms/Ciona_intestinalis_SRP198321/ciona_metadata_modified.txt")
+metadata = metadata[sample=="SRR9051006"]
+
+counts = fread("/oak/stanford/groups/horence/Roozbeh/NOMAD_10x/runs/marine_organisms/Ciona_intestinalis/Ciona_intestinalis_SRP198321/SRR9051006/satc_without_metadata/satcOut22.tsv",header=F)
+names(counts) = c("sample_id","cell_barcode","anchor","target","count")
+counts = counts[anchor=="CAACAAAGCCGATGGTTACTATGACAA"]
+
+counts[,anchor_count_per_cell:=sum(count),by=paste(cell_barcode,anchor)]
+counts[,target_count:=sum(count),by=target] # total number of reads per target
+counts[,target_frac:=target_count/sum(counts$count)] # fraction of anchor read for each target
+counts[,target_fraction_per_cell:=count/anchor_count_per_cell,by=paste(target,cell_barcode)]
+
+## merge with metadata #######
+counts = merge(counts, metadata[,list(cell,cell_type)], all.x = TRUE, all.y = FALSE, by.x = "cell_barcode", by.y = "cell")
+##############################
+
+counts = counts[target_fraction_per_cell>0.1]
+counts = counts[target_count>4]
+#counts[,target:=paste(target,round(target_frac,digits =4),sep="_"),by=target]
+counts$target = factor(counts$target,levels =  counts[order(-target_frac),list(target,target_frac)][!duplicated(target)]$target) # sort targets based on their counts
+
+
+counts_reshape = reshape(counts[,list(cell_barcode,target,count)], timevar="cell_barcode", idvar="target", direction="wide")
+counts_reshape = counts_reshape[order(target)] # sort the rows of the reshaped datatable based on the marginal target counts
+counts_reshape[is.na(counts_reshape)]=0
+counts_reshape_df = data.frame(counts_reshape)
+rownames(counts_reshape_df) = counts_reshape_df$target
+counts_reshape_df = counts_reshape_df[,-1]
+column_names = colnames(counts_reshape_df)
+column_names = gsub("count.","",column_names)
+colnames(counts_reshape_df) = column_names
+
+total_reads_per_cell = colSums(counts_reshape_df)
+sorting_dt = total_reads_per_cell
+for (counter in 1:nrow(counts_reshape_df)){
+  sorting_dt = rbind(sorting_dt, counts_reshape_df[counter,]/total_reads_per_cell)
+}
+sorting_dt = data.table(cbind(transpose(sorting_dt),colnames(sorting_dt)))
+sorting_dt = merge(sorting_dt,metadata[!duplicated(cell),list(cell,cell_type)],all.x=T,all.y=F,by.x="colnames(sorting_dt)",by.y="cell") 
+sort_cols = c("cell_type",names(sorting_dt)[3:(length(names(sorting_dt))-1)],"V1")
+sorting_dt = sorting_dt[order(sorting_dt[, ..sort_cols])]
+counts_reshape_df = counts_reshape_df[,sorting_dt$`colnames(sorting_dt)`]
+
+
+setkey(counts,cell_barcode)
+my_annotation_col = data.table(colnames(counts_reshape_df))
+my_annotation_col = merge(my_annotation_col, metadata[,list(cell,cell_type)],all.x=T,all.y=F,by.x="V1",by.y="cell")
+total_reads_per_cell_dt = data.table(names(total_reads_per_cell),total_reads_per_cell)
+names(total_reads_per_cell_dt)[2]="anchor_count"
+total_reads_per_cell_dt$anchor_count = factor(total_reads_per_cell_dt$anchor_count,levels = sort(unique(total_reads_per_cell_dt$anchor_count)))
+my_annotation_col = merge(my_annotation_col, total_reads_per_cell_dt, all.x = T, all.y = F, by.x = "V1", by.y = "V1")
+my_annotation_col$V1 = factor(my_annotation_col$V1,levels=colnames(counts_reshape_df))
+my_annotation_col[is.na(cell_type),cell_type:= "NA"]
+setorder(my_annotation_col,V1)
+
+test = my_annotation_col$V1
+my_annotation_col[,V1:=NULL]
+my_annotation_col = data.frame(my_annotation_col)
+rownames(my_annotation_col) = test
+
+
+## below I set the colors for annotation groups #########
+mycolors = brewer.pal(n = length(unique(my_annotation_col$cell_type)), name = "Set3")
+names(mycolors) = unique(my_annotation_col$cell_type)
+mycolors2 = brewer.pal(n = 9, name = "Reds")
+mycolors2 = colorRampPalette(mycolors2)(length(unique(unique(my_annotation_col$anchor_count))))
+names(mycolors2) = sort(unique(my_annotation_col$anchor_count))
+mycolors <- list(cell_type=mycolors, anchor_count = mycolors2)
+################################################################
+
+g1=pheatmap(counts_reshape_df,cluster_rows = FALSE,cluster_cols = F, main = "granny_anchor_across_4_sponge_samples", show_colnames = FALSE,fontsize = 6,annotation_col = my_annotation_col,show_rownames = F,annotation_colors =mycolors)
+
+g3=pheatmap(log10(counts_reshape_df+1)[1:30,],cluster_rows = FALSE,cluster_cols = F, main = "granny_anchor_across_4_sponge_samples", show_colnames = FALSE,fontsize = 6, color = viridis(n = 256, alpha = 1, begin = 0, end = 1, option = "viridis"),annotation_col = my_annotation_col,annotation_colors =mycolors,na_col = "white",legend_breaks = c(0,log10(10),log10(20),log10(30),log10(40),log10(50) ), legend_labels = c(0,10,20,30,40,50))
+```
